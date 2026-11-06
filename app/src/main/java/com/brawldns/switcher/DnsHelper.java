@@ -147,6 +147,10 @@ final class DnsHelper {
             if (done != null) done.run();
             return;
         }
+        if (VpnGuard.blocked(c)) {
+            if (done != null) done.run();
+            return;
+        }
         if (!hasSecure(c)) {
             EventLog.add(c, "Вручную: нет разрешения WRITE_SECURE_SETTINGS");
             if (done != null) done.run();

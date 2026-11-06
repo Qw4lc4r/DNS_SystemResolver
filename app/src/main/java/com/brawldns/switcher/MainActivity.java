@@ -146,7 +146,6 @@ public class MainActivity extends Activity {
         buildAccess();
         buildLog();
         buildData();
-        buildUpdates();
 
         stateListener = new SharedPreferences.OnSharedPreferenceChangeListener() {
             @Override
@@ -163,6 +162,7 @@ public class MainActivity extends Activity {
 
         Shizuku.addBinderReceivedListener(binderListener);
         Shizuku.addRequestPermissionResultListener(permListener);
+        silentUpdateCheck();
     }
 
     @Override
@@ -262,6 +262,7 @@ public class MainActivity extends Activity {
         toggleBtn = Ui.button(this, "Запустить", 0, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                if (!State.enabled(MainActivity.this) && vpnBlocked()) return;
                 MonitorService.toggle(MainActivity.this);
                 refreshDial();
             }
@@ -288,6 +289,7 @@ public class MainActivity extends Activity {
         manualBtn = Ui.button(this, "Включить DNS вручную", 2, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                if (!State.manual(MainActivity.this) && vpnBlocked()) return;
                 DnsHelper.toggleManual(MainActivity.this, new Runnable() {
                     @Override
                     public void run() {
@@ -304,14 +306,16 @@ public class MainActivity extends Activity {
         boolean on = State.enabled(this);
         boolean manual = State.manual(this);
         int kind = on ? State.kind(this) : State.OFF;
-        String txt = on ? State.text(this) : "Служба остановлена";
+        String txt = on ? State.text(this) : "Нажмите «Запустить», чтобы начать слежение";
         if (manual) {
             kind = State.ACTIVE;
             txt = "Вручную: DNS " + DnsHelper.currentHost(this);
+        } else if (!on && VpnGuard.vpnActive(this)) {
+            txt = "Включён VPN. Выключите его, чтобы запустить";
         }
-        String[] names = {"Выкл", "Ожидание", "Активно", "Пауза", "Внимание"};
+        String[] names = {"Выключено", "Ожидание", "Активно", "Пауза", "Внимание"};
         dial.set(kind, names[kind], on || manual ? DnsHelper.currentMode(this).equals("hostname")
-                ? DnsHelper.currentHost(this) : "частный DNS не задан" : "");
+                ? DnsHelper.currentHost(this) : "частный DNS не задан" : "служба остановлена");
         statusLine.setText(txt);
         toggleBtn.setText(on ? "Остановить" : "Запустить");
         boolean paused = State.pausedUntil(this) > System.currentTimeMillis();
@@ -397,13 +401,17 @@ public class MainActivity extends Activity {
             toast("Приложение не найдено");
             return;
         }
+        if (vpnBlocked()) return;
         if (!DnsHelper.hasSecure(this)) {
             toast("Нет разрешения WRITE_SECURE_SETTINGS, открываю без DNS");
             startActivity(launch);
             return;
         }
-        if (!State.enabled(this)) MonitorService.toggle(this);
-        State.setGraceUntil(this, System.currentTimeMillis() + 25_000L);
+        if (!State.enabled(this)) {
+            MonitorService.toggle(this);
+            State.setOneShot(this, true); // запущено через «Играть»: после игры остановится само
+        }
+        State.setGraceUntil(this, System.currentTimeMillis() + 40_000L);
         toast("Готовлю DNS…");
         final Context app = getApplicationContext();
         final Config c = cfg;
@@ -1197,7 +1205,7 @@ public class MainActivity extends Activity {
         put(root, Ui.section(this, "Данные"), 0);
         LinearLayout card = Ui.card(this);
         card.addView(Ui.dim(this, "Правила и настройки можно сохранить в файл и вернуть на другом "
-                + "телефоне. Токен обновлений в файл не попадает."));
+                + "телефоне."));
         LinearLayout acts = Ui.row(this);
         acts.addView(Ui.button(this, "Экспорт", 1, new View.OnClickListener() {
             @Override
@@ -1254,68 +1262,69 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ------------------------------------------------------------------ обновления
+    // ------------------------------------------------------------------ VPN
 
-    private void buildUpdates() {
-        put(root, Ui.section(this, "Обновления"), 0);
-        LinearLayout card = Ui.card(this);
-        card.addView(Ui.label(this, "Репозиторий GitHub"));
-        EditText repo = Ui.field(this, cfg.repo, "владелец/имя", true);
-        put(card, repo, 8);
-        watch(repo, s -> {
-            cfg.repo = s.trim();
-            cfg.save(this);
-        });
-        put(card, Ui.label(this, "Токен (для приватного репозитория)"), 16);
-        EditText tok = Ui.field(this, cfg.token, "необязательно", true);
-        tok.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        put(card, tok, 8);
-        watch(tok, s -> {
-            cfg.token = s.trim();
-            cfg.save(this);
-        });
-        put(card, Ui.dim(this, "Токен только для чтения (Contents: Read-only). Хранится на телефоне и "
-                + "уходит только на api.github.com."), 8);
-        put(card, Ui.button(this, "Проверить обновления", 1, new View.OnClickListener() {
+    /** true, если запуск нужно отменить: включён VPN. Показывает окно с инструкцией. */
+    private boolean vpnBlocked() {
+        if (!VpnGuard.vpnActive(this)) return false;
+        LinearLayout v = new LinearLayout(this);
+        v.setOrientation(LinearLayout.VERTICAL);
+        v.addView(Ui.title(this, "Выключите VPN", 22));
+        v.addView(Ui.gap(this, 12));
+        v.addView(Ui.body(this, "С включённым VPN частный DNS не работает. Выключите VPN, "
+                + "вернитесь сюда и запустите снова."));
+        v.addView(Ui.gap(this, 18));
+        final Dialog d = Ui.dialog(this, v, true);
+        v.addView(Ui.button(this, "Открыть настройки VPN", 0, new View.OnClickListener() {
             @Override
-            public void onClick(View v) {
-                checkUpdates();
+            public void onClick(View x) {
+                d.dismiss();
+                try {
+                    startActivity(new Intent(Settings.ACTION_VPN_SETTINGS));
+                } catch (Exception e) {
+                    toast("Откройте настройки VPN вручную");
+                }
             }
-        }), 16);
-        put(root, card, 0);
+        }));
+        v.addView(Ui.gap(this, 8));
+        v.addView(Ui.button(this, "Закрыть", 2, new View.OnClickListener() {
+            @Override
+            public void onClick(View x) {
+                d.dismiss();
+            }
+        }));
+        Ui.show(d, this);
+        return true;
     }
 
-    private void checkUpdates() {
-        toast("Проверяю…");
-        final String repo = cfg.repo;
-        final String token = cfg.token;
+    // ------------------------------------------------------------------ обновления (тихая проверка)
+
+    private void silentUpdateCheck() {
+        long now = System.currentTimeMillis();
+        SharedPreferences sp = State.prefs(this);
+        if (now - sp.getLong("upd_check", 0L) < 6 * 3600_000L) return;
+        sp.edit().putLong("upd_check", now).apply();
+        final Context app = getApplicationContext();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final Updater.Result r = Updater.check(getApplicationContext(), repo, token);
+                final Updater.Result r = Updater.check(app);
+                if (!r.ok || r.remote <= r.local) return;
                 ui.post(new Runnable() {
                     @Override
                     public void run() {
-                        showUpdateResult(r);
+                        if (!isFinishing()) showUpdateDialog(r);
                     }
                 });
             }
         }).start();
     }
 
-    private void showUpdateResult(final Updater.Result r) {
-        if (!r.ok) {
-            Ui.message(this, "Обновления", r.error);
-            return;
-        }
-        if (r.remote <= r.local) {
-            Ui.message(this, "Обновления", "Установлена актуальная сборка (" + r.local + ").");
-            return;
-        }
+    private void showUpdateDialog(final Updater.Result r) {
         LinearLayout v = new LinearLayout(this);
         v.setOrientation(LinearLayout.VERTICAL);
-        v.addView(Ui.title(this, "Доступна новая сборка", 22));
-        put(v, Ui.body(this, "У вас " + r.local + ", в репозитории " + r.remote + " (" + r.tag + ")."), 12);
+        v.addView(Ui.title(this, "Доступно обновление", 22));
+        put(v, Ui.body(this, "Установлена сборка " + r.local + ", вышла " + r.remote + "."), 12);
         final Dialog d = Ui.dialog(this, v, true);
         LinearLayout acts = Ui.row(this);
         acts.addView(Ui.button(this, "Позже", 2, new View.OnClickListener() {
@@ -1325,10 +1334,14 @@ public class MainActivity extends Activity {
             }
         }));
         acts.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
-        acts.addView(Ui.button(this, "Открыть релиз", 0, new View.OnClickListener() {
+        acts.addView(Ui.button(this, "Скачать", 0, new View.OnClickListener() {
             @Override
             public void onClick(View x) {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(r.url)));
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(r.apk)));
+                } catch (Exception e) {
+                    toast("Не удалось открыть ссылку");
+                }
                 d.dismiss();
             }
         }));

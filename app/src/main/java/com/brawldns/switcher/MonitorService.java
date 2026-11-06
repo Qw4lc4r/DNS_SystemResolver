@@ -49,6 +49,9 @@ public class MonitorService extends Service {
     private int lastKind = -1;
     private String lastText = "";
     private boolean running = false;
+    private boolean seenGame = false;
+    private long lastGame = 0L;
+    private long created = 0L;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -66,11 +69,14 @@ public class MonitorService extends Service {
     static void toggle(Context c) {
         if (State.enabled(c)) {
             State.setEnabled(c, false);
+            State.setOneShot(c, false);
             c.stopService(new Intent(c, MonitorService.class));
             State.setStatus(c, State.OFF, "Служба остановлена");
             EventLog.add(c, "Служба остановлена");
         } else {
+            if (VpnGuard.blocked(c)) return;
             State.setEnabled(c, true);
+            State.setOneShot(c, false);
             State.setStatus(c, State.WAIT, "Жду запуска игры");
             try {
                 c.startForegroundService(new Intent(c, MonitorService.class));
@@ -91,6 +97,7 @@ public class MonitorService extends Service {
         nm.createNotificationChannel(new NotificationChannel(
                 CHANNEL, "Слежение за играми", NotificationManager.IMPORTANCE_LOW));
         worker = Executors.newSingleThreadExecutor();
+        created = System.currentTimeMillis();
     }
 
     @Override
@@ -191,11 +198,17 @@ public class MonitorService extends Service {
         }
         boolean active = rule != null && blocked == null;
         boolean applied = DnsHelper.isApplied(this);
+        if (rule != null) {
+            seenGame = true;
+            lastGame = now;
+        }
 
         if (active) {
             lastActive = now;
             if (applied) {
                 publish(State.ACTIVE, rule.name + " · " + DnsHelper.currentHost(this));
+            } else if (VpnGuard.vpnActive(this)) {
+                publish(State.PROBLEM, VpnGuard.MSG);
             } else if (now >= retryAt) {
                 startApply(cfg, rule);
             }
@@ -205,6 +218,16 @@ public class MonitorService extends Service {
                 DnsHelper.restore(this);
                 EventLog.add(this, "DNS возвращён");
                 applied = false;
+            }
+            if (State.oneShot(this) && now > State.graceUntil(this)) {
+                boolean left = seenGame && now - lastGame >= cfg.offDelay * 1000L;
+                boolean never = !seenGame && now - created > 90_000L;
+                if (left || never) {
+                    EventLog.add(this, left ? "Игра закрыта: служба остановлена"
+                            : "Игра не запустилась: служба остановлена");
+                    toggle(this);
+                    return;
+                }
             }
             if (paused) {
                 publish(State.PAUSED, "Пауза до " + clock(pausedUntil));

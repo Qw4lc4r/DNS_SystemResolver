@@ -34,6 +34,15 @@ final class State {
         prefs(c).edit().putBoolean("manual", v).apply();
     }
 
+    /** Служба запущена кнопкой «Играть»: после выхода из игры останавливается сама. */
+    static boolean oneShot(Context c) {
+        return prefs(c).getBoolean("one_shot", false);
+    }
+
+    static void setOneShot(Context c, boolean v) {
+        prefs(c).edit().putBoolean("one_shot", v).apply();
+    }
+
     static long pausedUntil(Context c) {
         return prefs(c).getLong("paused_until", 0L);
     }

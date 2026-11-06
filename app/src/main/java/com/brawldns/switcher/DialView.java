@@ -114,11 +114,33 @@ final class DialView extends View {
         }
         canvas.drawCircle(cx, cy, outer - dp(28), ring);
 
-        float maxW = (outer - dp(28)) * 1.55f;
-        CharSequence b = TextUtils.ellipsize(bigText, big, maxW, TextUtils.TruncateAt.END);
-        canvas.drawText(b.toString(), cx, cy + dp(4), big);
+        float maxW = (outer - dp(28)) * 2f * 0.84f;
+        fit(big, bigText, sp(30), sp(17), maxW);
         String st = smallText.toUpperCase();
+        fit(small, st, sp(10.5f), sp(8), maxW);
+        CharSequence b = TextUtils.ellipsize(bigText, big, maxW, TextUtils.TruncateAt.END);
+        Paint.FontMetrics fb = big.getFontMetrics();
+        if (st.isEmpty()) {
+            canvas.drawText(b.toString(), cx, cy - (fb.ascent + fb.descent) / 2f, big);
+            return;
+        }
         CharSequence s2 = TextUtils.ellipsize(st, small, maxW, TextUtils.TruncateAt.END);
-        canvas.drawText(s2.toString(), cx, cy + dp(26), small);
+        Paint.FontMetrics fs = small.getFontMetrics();
+        float bigH = fb.descent - fb.ascent;
+        float smallH = fs.descent - fs.ascent;
+        float gap = dp(6);
+        float top = cy - (bigH + gap + smallH) / 2f;
+        canvas.drawText(b.toString(), cx, top - fb.ascent, big);
+        canvas.drawText(s2.toString(), cx, top + bigH + gap - fs.ascent, small);
+    }
+
+    /** Уменьшает шрифт, пока текст не влезет в круг. */
+    private void fit(TextPaint p, String text, float start, float min, float maxW) {
+        float size = start;
+        p.setTextSize(size);
+        while (size > min && p.measureText(text) > maxW) {
+            size -= sp(0.5f);
+            p.setTextSize(size);
+        }
     }
 }
